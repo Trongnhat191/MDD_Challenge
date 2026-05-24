@@ -100,8 +100,8 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, device, cfg, epoch)
 def validate(model, dataloader, device):
     model.eval()
     total_loss = 0
-    all_logits = []
-    all_label_ids = []
+    total_per = 0.0
+    num_batches = 0
 
     for batch in tqdm(dataloader, desc="Validating"):
         input_values = batch["input_values"].to(device)
@@ -117,15 +117,14 @@ def validate(model, dataloader, device):
         )
         total_loss += outputs.loss.item()
 
-        all_logits.append(outputs.logits.cpu())
-        all_label_ids.append(labels.cpu())
+        batch_per = compute_per(outputs.logits, labels)
+        total_per += batch_per
+        num_batches += 1
 
-    avg_loss = total_loss / len(dataloader)
-    logits = torch.cat(all_logits, dim=0)
-    label_ids = torch.cat(all_label_ids, dim=0)
-    per = compute_per(logits, label_ids)
+    avg_loss = total_loss / num_batches
+    avg_per = total_per / num_batches
 
-    return avg_loss, per
+    return avg_loss, avg_per
 
 
 def train(cfg: Config, device: torch.device):

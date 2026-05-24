@@ -1,0 +1,7 @@
+MDD-Challenge-2025-training-set/
+docs/
+__pycache__/
+.env
+AGENTS.md
+outputs/
+MDD-Framework-Public/
