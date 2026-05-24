@@ -8,7 +8,7 @@ import torchaudio
 from torch.utils.data import Dataset, DataLoader
 from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, Wav2Vec2Processor
 
-from config import Config
+from src.config import Config
 
 
 def extract_phonemes_from_df(df: pd.DataFrame) -> List[str]:

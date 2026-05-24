@@ -2,22 +2,16 @@ import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Model, Wav2Vec2PreTrainedModel
 
-from config import Config
+from src.config import Config
 
 
 class PhoneticEncoder(nn.Module):
     def __init__(self, hidden_dim: int = 768, dropout: float = 0.1):
         super().__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-        )
+        self.conv1 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1)
+        self.gelu1 = nn.GELU()
+        self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1)
+        self.gelu2 = nn.GELU()
         self.bilstm = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim // 2,
@@ -31,8 +25,8 @@ class PhoneticEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.transpose(1, 2)
-        x = self.conv1(x)
-        x = self.conv2(x)
+        x = self.gelu1(self.conv1(x))
+        x = self.gelu2(self.conv2(x))
         x = x.transpose(1, 2)
         x, _ = self.bilstm(x)
         x = self.layer_norm(x)
