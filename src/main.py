@@ -1,12 +1,20 @@
 import os
+import sys
 
 import pandas as pd
 import torch
 
-from config import Config
-from data import extract_phonemes_from_df, build_vocab_dict, save_vocab
-from train import train
-from eval import evaluate
+# Ensure project root is in sys.path so 'from src.xxx' imports work
+# regardless of whether running from project root or from src/ directory
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+_proj_root = os.path.dirname(_src_dir)
+if _proj_root not in sys.path:
+    sys.path.insert(0, _proj_root)
+
+from src.config import Config
+from src.data import extract_phonemes_from_df, build_vocab_dict, save_vocab
+from src.train import train
+from src.eval import evaluate
 
 
 def main():

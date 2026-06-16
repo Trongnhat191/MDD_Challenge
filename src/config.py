@@ -16,16 +16,42 @@ class Config:
     batch_size: int = 8
     gradient_accumulation: int = 2
     learning_rate: float = 1e-4
-    num_epochs: int = 5
+    num_epochs: int = 20
     warmup_ratio: float = 0.1
     max_grad_norm: float = 1.0
     freeze_feature_extractor: bool = True
+    freeze_wav2vec2_encoder: bool = True  # freeze transformer encoder (most params)
+    unfreeze_epoch: int = 0  # unfreeze wav2vec2 after this epoch (0=never)
 
     max_canonical_len: int = 128
     hidden_dim: int = 768
     linguistic_emb_dim: int = 256
     num_attention_heads: int = 8
+    num_cross_attn_layers: int = 2  # stacked cross-attention + fusion blocks
     dropout: float = 0.1
+
+    # SpecAugment (applied via Wav2Vec2 config)
+    spec_augment: bool = True
+    mask_time_prob: float = 0.05
+    mask_time_length: int = 10
+    mask_feature_prob: float = 0.05
+    mask_feature_length: int = 10
+
+    # Speed perturbation
+    speed_perturb: bool = True
+    speed_perturb_range: tuple = (0.9, 1.1)
+
+    # Oversampling error samples
+    oversample_errors: bool = True
+    error_oversample_weight: float = 3.0
+
+    # Weighted CTC
+    weighted_ctc: bool = True
+    error_loss_weight: float = 2.0
+
+    # Beam search decoding
+    beam_width: int = 10
+    beam_search_lm_weight: float = 0.0  # 0.0 = no LM, >0 for shallow fusion
 
     data_root: str = "MDD-Challenge-2025-training-set"
     metadata_path: str = field(init=False)

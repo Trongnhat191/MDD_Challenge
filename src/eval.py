@@ -6,15 +6,16 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import Wav2Vec2Processor
 
-from config import Config
-from data import split_data, MDDDataset, DataCollatorCTCWithPadding, load_vocab
-from model import create_model
+from src.config import Config
+from src.data import split_data, MDDDataset, DataCollatorCTCWithPadding, load_vocab
+from src.model import create_model, create_ctc_decoder, decode_to_text, beam_search_decode
 
 
 @torch.no_grad()
-def predict(model, dataloader, device, blank_id=0):
+def predict(model, dataloader, device, decoder=None, beam_width=10):
+    """Run inference with optional beam search decoding."""
     model.eval()
-    all_preds = []
+    all_decoded = []
 
     for batch in dataloader:
         input_values = batch["input_values"].to(device)
@@ -23,19 +24,11 @@ def predict(model, dataloader, device, blank_id=0):
 
         output = model(input_values, canonical_ids, attention_mask=attention_mask)
         logits = output.logits
-        pred_ids = torch.argmax(logits, dim=-1)
 
-        for b in range(pred_ids.shape[0]):
-            ids = pred_ids[b].tolist()
-            collapsed = []
-            prev = None
-            for tid in ids:
-                if tid != prev and tid != blank_id:
-                    collapsed.append(tid)
-                prev = tid
-            all_preds.append(collapsed)
+        decoded = beam_search_decode(logits, decoder, beam_width=beam_width)
+        all_decoded.extend(decoded)
 
-    return all_preds
+    return all_decoded
 
 
 def evaluate(cfg: Config, device: torch.device):
@@ -57,9 +50,14 @@ def evaluate(cfg: Config, device: torch.device):
     )
     model.to(device)
 
+    # Create CTC decoder for beam search
+    decoder = create_ctc_decoder(vocab)
+    beam_type = f"beam search (width={cfg.beam_width})" if cfg.beam_width > 1 else "greedy"
+    print(f"Decoding: {beam_type}")
+
     processor = Wav2Vec2Processor.from_pretrained(cfg.processor_dir)
 
-    test_dataset = MDDDataset(test_df, cfg.audio_dir, vocab, cfg)
+    test_dataset = MDDDataset(test_df, cfg.audio_dir, vocab, cfg, is_train=False)
     collator = DataCollatorCTCWithPadding(processor)
     test_loader = DataLoader(
         test_dataset,
@@ -69,13 +67,8 @@ def evaluate(cfg: Config, device: torch.device):
         num_workers=2,
     )
 
-    predictions = predict(model, test_loader, device)
-
-    results = []
-    for pred_ids in predictions:
-        tokens = [id2token.get(tid, "") for tid in pred_ids]
-        tokens = [t for t in tokens if t and t != "[CTC_BLANK]"]
-        results.append(" ".join(tokens))
+    predictions = predict(model, test_loader, device, decoder, cfg.beam_width)
+    results = decode_to_text(predictions, id2token)
 
     results_df = pd.DataFrame({"predict": results})
     results_path = os.path.join(cfg.output_dir, "predictions.csv")

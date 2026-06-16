@@ -5,3 +5,8 @@ __pycache__/
 AGENTS.md
 outputs/
 MDD-Framework-Public/
+*.csv
+MDD-Challenge-2025-public-test/
+*.zip
+MDD-Challenge-2025-private-test/
+.omo

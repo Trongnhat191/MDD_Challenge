@@ -5,12 +5,12 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
-from config import Config
-from data import split_data, MDDDataset, DataCollatorCTCWithPadding, create_processor, load_vocab
-from model import create_model
+from src.config import Config
+from src.data import split_data, MDDDataset, DataCollatorCTCWithPadding, create_processor, load_vocab
+from src.model import create_model
 
 
 def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps):
@@ -141,17 +141,34 @@ def train(cfg: Config, device: torch.device):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable params: {trainable:,}")
 
-    train_dataset = MDDDataset(train_df, cfg.audio_dir, vocab, cfg)
-    val_dataset = MDDDataset(val_df, cfg.audio_dir, vocab, cfg)
+    # Train dataset with augmentations + oversampling
+    train_dataset = MDDDataset(train_df, cfg.audio_dir, vocab, cfg, is_train=True)
+    val_dataset = MDDDataset(val_df, cfg.audio_dir, vocab, cfg, is_train=False)
 
     collator = DataCollatorCTCWithPadding(processor)
+
+    # WeightedRandomSampler for oversampling error samples
+    if cfg.oversample_errors:
+        sample_weights = train_dataset.get_sample_weights(
+            error_weight=cfg.error_oversample_weight
+        )
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(train_dataset),
+            replacement=True,
+        )
+        shuffle = False  # sampler handles shuffling
+    else:
+        sampler = None
+        shuffle = True
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         collate_fn=collator,
-        num_workers=2,
+        num_workers=0,  # 0 for Colab (fork OOM with torchaudio Resample)
         pin_memory=True,
     )
     val_loader = DataLoader(
@@ -159,7 +176,7 @@ def train(cfg: Config, device: torch.device):
         batch_size=cfg.batch_size,
         shuffle=False,
         collate_fn=collator,
-        num_workers=2,
+        num_workers=0,
         pin_memory=True,
     )
 
@@ -172,6 +189,26 @@ def train(cfg: Config, device: torch.device):
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
 
     for epoch in range(cfg.num_epochs):
+        # Unfreeze wav2vec2 at specified epoch for end-to-end fine-tuning
+        if cfg.unfreeze_epoch > 0 and epoch == cfg.unfreeze_epoch:
+            model.unfreeze_wav2vec2()
+            print(f">>> Unfrozen wav2vec2 at epoch {epoch + 1} (lr x0.1)")
+            # Re-init optimizer: lower LR for wav2vec2 backbone, standard for PL head
+            optimizer = AdamW(
+                [
+                    {"params": model.wav2vec2.parameters(), "lr": cfg.learning_rate * 0.1},
+                    {"params": [p for n, p in model.named_parameters()
+                                if "wav2vec2" not in n]},
+                ],
+                lr=cfg.learning_rate,
+            )
+            trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(f"Trainable params after unfreeze: {trainable:,}")
+            # Recompute scheduler for remaining epochs
+            remaining_steps = len(train_loader) * (cfg.num_epochs - epoch) // cfg.gradient_accumulation
+            warmup_steps = int(remaining_steps * cfg.warmup_ratio)
+            scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, remaining_steps)
+
         train_loss = train_one_epoch(model, train_loader, optimizer, scheduler, device, cfg, epoch)
         val_loss, val_per = validate(model, val_loader, device)
 

@@ -1,11 +1,14 @@
 import json
+import math
 import os
+import random
 from typing import List, Tuple
 
+import numpy as np
 import pandas as pd
 import torch
 import torchaudio
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, Wav2Vec2Processor
 
 from src.config import Config
@@ -85,6 +88,7 @@ class MDDDataset(Dataset):
         audio_dir: str,
         vocab: dict,
         cfg: Config,
+        is_train: bool = False,
     ):
         self.df = df
         self.audio_dir = audio_dir
@@ -92,6 +96,58 @@ class MDDDataset(Dataset):
         self.sample_rate = cfg.sample_rate
         self.max_audio_len = cfg.max_audio_len * cfg.sample_rate
         self.blank_id = 0
+        self.is_train = is_train
+        self.cfg = cfg
+
+        # Precompute mispronunciation flags for oversampling
+        self._error_flags = None
+
+    def _get_error_flags(self) -> List[bool]:
+        """Return boolean list: True if canonical != transcript for each row."""
+        if self._error_flags is not None:
+            return self._error_flags
+        self._error_flags = []
+        for _, row in self.df.iterrows():
+            can = str(row.get("canonical", "")).strip()
+            trn = str(row.get("transcript", "")).strip()
+            self._error_flags.append(can != trn)
+        return self._error_flags
+
+    def get_sample_weights(self, error_weight: float = 3.0) -> List[float]:
+        """Return sample weights for WeightedRandomSampler (oversample errors)."""
+        flags = self._get_error_flags()
+        return [error_weight if f else 1.0 for f in flags]
+
+    def _init_speed_resamplers(self):
+        """Pre-create cached Resample transforms for discrete speed values."""
+        self._speed_resamplers = {}
+        for speed_pct in [90, 95, 100, 105, 110]:
+            speed = speed_pct / 100.0
+            new_sr = int(self.sample_rate / speed)
+            key_down = (self.sample_rate, new_sr)
+            key_up = (new_sr, self.sample_rate)
+            self._speed_resamplers[speed_pct] = (
+                torchaudio.transforms.Resample(*key_down),
+                torchaudio.transforms.Resample(*key_up),
+            )
+
+    def _apply_speed_perturb(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Speed perturbation using cached resamplers (~175ms vs ~1600ms)."""
+        if not hasattr(self, '_speed_resamplers'):
+            self._init_speed_resamplers()
+        # Pick from discrete speeds to maximize filter cache reuse
+        speed_pct = random.choice([90, 95, 100, 105, 110])
+        resample_down, resample_up = self._speed_resamplers[speed_pct]
+        if speed_pct != 100:
+            waveform = resample_down(waveform)
+            waveform = resample_up(waveform)
+        return waveform
+
+    def _apply_noise(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Add small Gaussian noise."""
+        noise_level = random.uniform(0.001, 0.01)
+        noise = torch.randn_like(waveform) * noise_level
+        return waveform + noise
 
     def __len__(self):
         return len(self.df)
@@ -110,11 +166,18 @@ class MDDDataset(Dataset):
 
         waveform = waveform.squeeze(0)
 
+        # --- Training augmentations ---
+        if self.is_train:
+            if self.cfg.speed_perturb and random.random() < 0.8:
+                waveform = self._apply_speed_perturb(waveform)
+            if random.random() < 0.3:
+                waveform = self._apply_noise(waveform)
+
         if waveform.size(0) > self.max_audio_len:
             waveform = waveform[:self.max_audio_len]
 
         input_values = waveform.numpy()
-        phoneme_str = row["transcript"]
+        phoneme_str = row.get("transcript", "")
         canonical_str = row["canonical"]
 
         labels = [self.vocab.get(ph, self.blank_id) for ph in phoneme_str.split()]
